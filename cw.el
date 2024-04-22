@@ -144,9 +144,11 @@ POS and CATEGORY are the group ID and category for these items."
 (defvar cw--search-history nil
   "History variable for `cw-search' and co.")
 
+(defvar cw--count 5
+  "Max number of results per source.")
+
 ;;; Sources
 ;;;; gptel
-(require 'gptel)
 (defvar cw-source-gptel
   `(:name     "gptel"
     :narrow   ?g
@@ -269,7 +271,7 @@ POS and CATEGORY are the group ID and category for these items."
   (concat cw-brave-url "?"
           (url-build-query-string
            `(("q" ,(url-hexify-string query))
-             ("count" ,(format "%s" 5))
+             ("count" ,(format "%s" cw--count))
              ("page" ,(format "%s" 0))))))
 
 (defun cw-brave-query-args (plz-callback)
@@ -305,7 +307,7 @@ POS and CATEGORY are the group ID and category for these items."
            (funcall buffer-preview 'preview nil)))))))
 
 (defun cw--elfeed-search (query)
-  (let* ((elfeed-search-filter (concat "#5 " query))
+  (let* ((elfeed-search-filter (concat (format "#%d " cw--count) query))
          (filter (elfeed-search-parse-filter elfeed-search-filter))
          (head (list nil)) (tail head) (count 0)
          (lexical-binding t)
@@ -361,7 +363,7 @@ POS and CATEGORY are the group ID and category for these items."
     :enabled  ,(lambda () (fboundp 'wombag))))
 
 (defun cw--wombag-search (query)
-  (let* ((wombag-search-filter (concat "#5 " query))
+  (let* ((wombag-search-filter (concat (format "#%d " cw--count) query))
          (filter (wombag-search-parse-filter
                   wombag-search-filter wombag-search-columns))
          (entries (wombag-db-get-entries filter wombag-search-columns)))
