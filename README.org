@@ -1,0 +1,29 @@
+A small UI experiment for asynchronous, multi-source, local + remote search using [[https://github.com/minad/consult][Consult]].
+
+This package is intended to help improve the full fledged [[https://github.com/armindarvish/consult-web][consult-web]] package, it will be archived after.
+
+Includes a few local and remote sources for testing.  Unavailable sources will turn themselves off automatically.
+
+-----
+
+| Remote       | Requires           | Configuration      |
+|--------------+--------------------+--------------------|
+| Brave search | Brave API key, [[https://github.com/alphapapa/plz.el][plz]] | =cw-brave-api-key= |
+| AI assistant | [[https://github.com/karthink/gptel][gptel]] set up       | See gptel          |
+
+-----
+
+| Local           | Requires     | Configuration    |
+|-----------------+--------------+------------------|
+| Browser history | [[https://github.com/agzam/browser-hist.el][browser-hist]] | See browser-hist |
+| Elfeed          | [[https://github.com/skeeto/elfeed][elfeed]]       | See elfeed       |
+| Wallabag        | [[https://github.com/karthink/wombag][wombag]]       | See wombag       |
+
+Provides a =cw-search= (all sources) and a =cw-search-local= command (local sources only), but you can pick the sources you want.
+
+*** Demo
+
+#+html: <video src="https://github.com/karthink/consult-web-mini/assets/8607532/a3898f10-d256-403e-b46a-3b93085ff09d"></video>
+
+(The TOC for the eww buffer in the middle of the demo is =consult-imenu=)
+
