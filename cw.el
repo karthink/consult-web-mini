@@ -100,7 +100,7 @@ POS and CATEGORY are the group ID and category for these items."
                   options
                   (list
                    :history     'cw--search-history
-                   :initial     "#"
+                   :initial     (consult--async-split-initial nil)
                    :category    'multi-category
                    :predicate   (apply-partially #'consult--multi-predicate sources)
                    :annotate    (apply-partially #'cw--annotate sources)
