@@ -360,7 +360,7 @@ POS and CATEGORY are the group ID and category for these items."
     :category consult-web
     :items    ,#'cw--wombag-search
     :state    ,#'cw--wombag-state
-    :enabled  ,(lambda () (fboundp 'wombag))))
+    :enabled  ,(lambda () (featurep 'wombag-search))))
 
 (defun cw--wombag-search (query)
   (let* ((wombag-search-filter (concat (format "#%d " cw--count) query))
@@ -370,7 +370,8 @@ POS and CATEGORY are the group ID and category for these items."
     (when entries
       (let ((wombag-search-title-width 60))
         (mapcar (lambda (entry) (propertize (wombag-search-format-entry entry)
-                                       :entry entry))
+                                       :entry entry
+                                       :url (alist-get 'url entry)))
                 entries)))))
 
 (defun cw--wombag-state ()
