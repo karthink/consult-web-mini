@@ -218,6 +218,10 @@ POS and CATEGORY are the group ID and category for these items."
     :items    ,#'cw--brave-request
     :enabled  ,(lambda () cw-brave-api-key)))
 
+(defun cw--eww-readable-once ()
+  (eww-readable)
+  (remove-hook 'eww-after-render-hook #'cw--eww-readable-once))
+
 (defun cw--brave-state ()
   (let ((buffer-preview (consult--buffer-preview)))
     (lambda (action cand)
@@ -229,7 +233,9 @@ POS and CATEGORY are the group ID and category for these items."
                          (url (or (plist-get props :url)
                                   (plist-get props :search-url))))
                (if (eq action 'preview)
-                   (funcall buffer-preview 'preview (eww-browse-url url))
+                   (progn
+                     (add-hook 'eww-after-render-hook #'cw--eww-readable-once)
+                     (funcall buffer-preview 'preview (eww-browse-url url)))
                  (browse-url url)))
            (funcall buffer-preview 'preview cand)))))))
 
