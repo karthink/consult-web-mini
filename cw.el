@@ -126,7 +126,8 @@ POS and CATEGORY are the group ID and category for these items."
         (consult-async-input-debounce 0.4))
     (cw--multi (list cw-source-elfeed cw-source-gptel
                      cw-source-brave cw-source-wombag
-                     cw-source-browser-hist)
+                     cw-source-browser-hist
+                     cw-source-invidious)
                :prompt "Search: "
                :preview-key "M-RET")))
 
@@ -421,6 +422,152 @@ POS and CATEGORY are the group ID and category for these items."
                             :url url
                             :query query)))
             results)))
+;;;; Invidious
+(defvar cw-source-invidious
+  `(:name     "Youtube"
+    :narrow   ?y
+    :category consult-web
+    :items    ,#'cw--invidious-search
+    :state    ,#'cw--brave-state
+    :hidden   t))
+
+
+(defface cw--invidious-published-face
+  '((((class color) (background light)) (:foreground "#a0a"))
+    (((class color) (background dark))  (:foreground "#7a7")))
+  "Face used for the video published date.")
+
+(defface cw--invidious-author-face
+  '((((class color) (background light)) (:foreground "#aa0"))
+    (((class color) (background dark))  (:foreground "#ff0")))
+  "Face used for channel names.")
+
+(defface cw--invidious-length-face
+  '((((class color) (background light)) (:foreground "#aaa"))
+    (((class color) (background dark))  (:foreground "#77a")))
+  "Face used for the video length.")
+
+(defvar cw--invidious-servers nil)
+
+(defun cw--invidious-state ()
+  (let ((buffer-preview (consult--buffer-preview)))
+    (lambda (action cand)
+      (pcase action
+        ('exit (funcall buffer-preview 'exit cand))
+        ((or 'preview 'return)
+         (if cand
+             (when-let* ((props (text-properties-at 0 cand))
+                         (url (or (plist-get props :url)
+                                  (plist-get props :search-url))))
+               (if (eq action 'preview)
+                   (progn
+                     (add-hook 'eww-after-render-hook #'cw--eww-readable-once)
+                     (funcall buffer-preview 'preview (eww-browse-url url)))
+                 (browse-url url)))
+           (funcall buffer-preview 'preview cand)))))))
+
+(defun cw--get-invidious-servers (&optional rotate)
+  (when (and cw--invidious-servers rotate)
+    (setq cw--invidious-servers
+          (nconc (cdr cw--invidious-servers)
+                 (list (car cw--invidious-servers)))))
+  (or cw--invidious-servers
+      (setq cw--invidious-servers
+            (when-let ((raw
+                        (plz 'get (concat "https://api.invidious.io/instances.json"
+                                          "?pretty=1&sort_by=type,users")
+                          :then 'sync)))
+              (thread-last
+                (json-parse-string raw :object-type 'plist :array-type 'list)
+                (cl-remove-if-not (lambda (s) (eq t (plist-get (cadr s) :api))))
+                (mapcar #'car))))))
+
+(defun cw--invidious-search (terms callback)
+  (let* ((params (url-build-query-string
+                  `(("q" ,terms)
+                    ("page" "1")
+                    ;; Fields are ignored right now, this is for the future
+                    ("fields" "title,videoId,author,authorId,authorUrl,lengthSeconds,published")
+                    ;; ("type" "video" "playlist")
+                    ("sort_by" "relevance"))))
+         (api-url (car (cw--get-invidious-servers)))
+         (query-url (concat api-url "/api/v1/search?" params)))
+    (plz 'get query-url
+      :as (lambda () (json-parse-buffer :object-type 'plist))
+      :then
+      (lambda (response)
+        "Return list of candidates to cw."
+        (when response
+          (thread-last response
+            ;; (seq-take response cw--count)
+            (mapcar
+             (lambda (result)
+               (pcase (plist-get result :type)
+                 ("channel"
+                  (propertize
+                   (concat (propertize "[CHANNEL] "
+                            'face 'cw--invidious-published-face)
+                           " " (truncate-string-to-width (plist-get result :description) 60) " "
+                           (propertize " " 'display `(space :align-to ,(floor (* (window-width) 3) 5)))
+                           (propertize (if-let ((subs (plist-get result :subCount)))
+                                           (format "%4s subs" (file-size-human-readable subs 'si))
+                                         (make-string 11 ? ))
+                                       'face 'cw--invidious-length-face)
+                           " " (truncate-string-to-width
+                                (propertize (plist-get result :author)
+                                            'face 'cw--invidious-author-face)
+                                40 nil ? ))
+                   :url (format "https://www.youtube.com/%s/videos" (plist-get result :channelHandle))
+                   :author-url (format "https://www.youtube.com%s" (plist-get result :authorUrl))))
+                 ("playlist"
+                  (propertize
+                   (concat (propertize "[PLAYLIST]"
+                            'face 'cw--invidious-published-face)
+                           " " (plist-get result :title) " "
+                           (propertize " " 'display `(space :align-to ,(floor (* (window-width) 3) 5)))
+                           (propertize (format "%4d Videos " (plist-get result :videoCount))
+                                       'face 'cw--invidious-length-face)
+                           " " (truncate-string-to-width
+                                (propertize (plist-get result :author)
+                                            'face 'cw--invidious-author-face)
+                                40 nil ? ))
+                   :url (format "https://www.youtube.com/watch?list=%s"
+                                (plist-get result :playlistId))
+                   :author-url (format "https://www.youtube.com%s"
+                                       (plist-get result :authorUrl))))
+                 ("video"
+                  (propertize
+                   (concat (propertize
+                            (format-time-string
+                             "%Y-%m-%d"
+                             (if-let ((published (plist-get result :published)))
+                                 (seconds-to-time published) 0))
+                            'face 'cw--invidious-published-face)
+                           " " (plist-get result :title) " "
+                           (propertize " " 'display `(space :align-to ,(- (floor (* (window-width) 3) 5)
+                                                                        12)))
+                           (and-let* ((duration (plist-get result :lengthSeconds))
+                                      (hours (floor duration 3600))
+                                      (minutes (floor (mod duration 3600) 60))
+                                      (seconds (mod duration 60)))
+                             (propertize
+                              (format "(%02d:%02d:%02d) " hours minutes seconds)
+                              'face 'cw--invidious-length-face))
+                           (propertize
+                            (if-let ((views (plist-get result :viewCount)))
+                                (format "%4s views" (file-size-human-readable views 'si))
+                              (make-string 11 ? ))
+                            'face 'cw--invidious-length-face)
+                           " " (truncate-string-to-width
+                                (propertize (plist-get result :author)
+                                            'face 'cw--invidious-author-face)
+                                40 nil ? ))
+                   :url (format "https://www.youtube.com/watch?v=%s"
+                                (plist-get result :videoId))
+                   :author-url (format "https://www.youtube.com%s"
+                                       (plist-get result :authorUrl)))))))
+            (seq-filter (lambda (result) (not (null result))))
+            (funcall callback)))))))
 
 ;;; Feature
 
