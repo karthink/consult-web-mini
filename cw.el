@@ -99,6 +99,7 @@ POS and CATEGORY are the group ID and category for these items."
                  (append
                   options
                   (list
+                   :sort        nil
                    :history     'cw--search-history
                    :initial     (consult--async-split-initial nil)
                    :category    'multi-category
