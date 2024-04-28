@@ -290,7 +290,7 @@ POS and CATEGORY are the group ID and category for these items."
                                                (if (functionp key) (funcall key) key))))
         :as (lambda () (json-parse-buffer :object-type 'plist))
         :then plz-callback
-        :else (lambda (plz-error) (print plz-error (get-buffer "*scratch*")))))
+        :else (lambda (plz-error) (message "%S" plz-error))))
 
 ;;;; Elfeed
 (defvar cw-source-elfeed
@@ -403,25 +403,28 @@ POS and CATEGORY are the group ID and category for these items."
     :enabled  ,(lambda () (fboundp 'browser-hist-search))))
 
 (defun cw--browser-hist-search (query)
-  (when-let ((results (browser-hist--send-query query)))
-    (mapcar (pcase-lambda (`(,url . ,title))
-              (let* ((urlobj (and url (url-generic-parse-url url)))
-                     (domain (and (url-p urlobj) (url-domain urlobj)))
-                     (domain (and (stringp domain)
-                                  (propertize domain 'face 'font-lock-variable-name-face)))
-                     (path (and (url-p urlobj) (url-filename urlobj)))
-                     (path (and (stringp path)
-                                (propertize path 'face 'font-lock-warning-face)))
-                     (decorated (concat
-                                 (truncate-string-to-width (or title url) (floor (window-width) 2))
-                                 "\t"
-                                 (propertize " " 'display '(space :align-to center))
-                                 domain path)))
-                (propertize decorated
-                            :title title
-                            :url url
-                            :query query)))
-            results)))
+  (when (require 'browser-hist nil t)
+    (when-let ((results (browser-hist--send-query query)))
+      (mapcar (pcase-lambda (`(,url . ,title))
+                (let* ((urlobj (and url (url-generic-parse-url url)))
+                       (domain (and (url-p urlobj) (url-domain urlobj)))
+                       (domain (and (stringp domain)
+                                    (propertize domain 'face 'font-lock-variable-name-face)))
+                       (path (and (url-p urlobj) (url-filename urlobj)))
+                       (path (and (stringp path)
+                                  (propertize path 'face 'font-lock-warning-face)))
+                       (decorated (concat
+                                   (truncate-string-to-width (or title url) (floor (window-width) 2))
+                                   "\t"
+                                   (propertize " " 'display '(space :align-to center))
+                                   domain path)))
+                  (propertize decorated
+                              :title title
+                              :url url
+                              :query query)))
+              results))))
+
+
 ;;;; Invidious
 (defvar cw-source-invidious
   `(:name     "Youtube"
