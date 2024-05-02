@@ -241,36 +241,51 @@ POS and CATEGORY are the group ID and category for these items."
                  (browse-url url)))
            (funcall buffer-preview 'preview cand)))))))
 
+(defvar url-http-end-of-headers)
+
+(defun cw--url-parse-buffer ()
+  (goto-char url-http-end-of-headers)
+  (condition-case nil
+      (json-parse-buffer :object-type 'plist)
+    (error nil)))
+
 (defun cw--brave-request (query callback)
-  (apply
-   #'plz 'get (cw-brave-url-string query)
-   (cw-brave-query-args
-    (lambda (attrs)
-      (when-let* ((raw-results (map-nested-elt attrs '(:web :results)))
-                  (annotated-results
-                   (mapcar
-                    (lambda (item)
-                      (let* ((title (map-elt item :title))
-                             (search-url (cw-brave-url-string query))
-                             (url (map-elt item :url))
-                             (urlobj (and url (url-generic-parse-url url)))
-                             (domain (and (url-p urlobj) (url-domain urlobj)))
-                             (domain (and (stringp domain)
-                                          (propertize domain 'face 'font-lock-variable-name-face)))
-                             (path (and (url-p urlobj) (url-filename urlobj)))
-                             (path (and (stringp path)
-                                        (propertize path 'face 'font-lock-warning-face)))
-                             (decorated (concat title "\t"
-                                                (propertize " " 'display '(space :align-to center))
-                                                domain path
-                                                )))
-                        (propertize decorated
-                                    :title title
-                                    :url url
-                                    :search-url search-url
-                                    :query query)))
-                    raw-results)))
-        (funcall callback annotated-results))))))
+  (let ((url-request-method "GET")
+        (url-request-extra-headers
+         `(("User-Agent" . "Emacs:consult-web/0.1 (Emacs consult-web package; https://github.com/armindarvish/consult-web)")
+           ("Accept" . "application/json")
+           ("Accept-Encoding" . "gzip")
+           ("X-Subscription-Token" . ,(let ((key cw-brave-api-key))
+                                       (if (functionp key) (funcall key) key))))))
+    (url-retrieve (cw-brave-url-string query)
+                  (lambda (_)
+                    (when-let* ((attrs (cw--url-parse-buffer))
+                                (raw-results (map-nested-elt attrs '(:web :results)))
+                                (annotated-results
+                                 (mapcar
+                                  (lambda (item)
+                                    (let* ((title (map-elt item :title))
+                                           (search-url (cw-brave-url-string query))
+                                           (url (map-elt item :url))
+                                           (urlobj (and url (url-generic-parse-url url)))
+                                           (domain (and (url-p urlobj) (url-domain urlobj))) ;we modify domain here
+                                           (domain (and (stringp domain)
+                                                        (propertize domain 'face 'font-lock-variable-name-face)))
+                                           (path (and (url-p urlobj) (url-filename urlobj)))
+                                           (path (and (stringp path)
+                                                      (propertize path 'face 'font-lock-warning-face)))
+                                           (decorated (concat title "\t"
+                                                              (propertize " " 'display '(space :align-to center))
+                                                              domain path
+                                                              )))
+                                      (propertize decorated
+                                                  :title title
+                                                  :url url
+                                                  :search-url search-url
+                                                  :query query)))
+                                  raw-results)))
+                      (funcall callback annotated-results)))
+                  nil 'silent)))
 
 (defvar cw-brave-url "https://api.search.brave.com/res/v1/web/search")
 (defvar cw-brave-api-key nil)
@@ -281,17 +296,6 @@ POS and CATEGORY are the group ID and category for these items."
            `(("q" ,(url-hexify-string query))
              ("count" ,(format "%s" cw--count))
              ("page" ,(format "%s" 0))))))
-
-(defun cw-brave-query-args (plz-callback)
-  (declare (indent 1))
-  (list :headers `(("User-Agent" . "Emacs:consult-web/0.1 (Emacs consult-web package; https://github.com/armindarvish/consult-web)")
-                   ("Accept" . "application/json")
-                   ("Accept-Encoding" . "gzip")
-                   ("X-Subscription-Token" . ,(let ((key cw-brave-api-key))
-                                               (if (functionp key) (funcall key) key))))
-        :as (lambda () (json-parse-buffer :object-type 'plist))
-        :then plz-callback
-        :else (lambda (plz-error) (message "%S" plz-error))))
 
 ;;;; Elfeed
 (defvar cw-source-elfeed
@@ -408,7 +412,7 @@ POS and CATEGORY are the group ID and category for these items."
     (when-let ((results (browser-hist--send-query query)))
       (mapcar (pcase-lambda (`(,url . ,title))
                 (let* ((urlobj (and url (url-generic-parse-url url)))
-                       (domain (and (url-p urlobj) (url-domain urlobj)))
+                       (domain (AND (URL-P urlobj) (url-domain urlobj)))
                        (domain (and (stringp domain)
                                     (propertize domain 'face 'font-lock-variable-name-face)))
                        (path (and (url-p urlobj) (url-filename urlobj)))
