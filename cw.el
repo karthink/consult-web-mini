@@ -69,6 +69,9 @@
 (declare-function wombag-search-format-entry "ext:wombag-search")
 (declare-function wombag-show-entry "ext:wombag")
 (declare-function browser-hist--send-query "ext:browser-hist")
+(declare-function notmuch-tree-format-field "ext:notmuch-tree")
+(declare-function notmuch-tree "ext:notmuch-tree")
+(declare-function notmuch-show "ext:notmuch-show")
 
 (defvar gptel-model)
 (defvar gptel-stream)
@@ -78,6 +81,8 @@
 (defvar elfeed-search-title-min-width)
 (defvar elfeed-search-title-max-width)
 (defvar wombag-search-columns)
+(defvar notmuch-search-result-format)
+(defvar notmuch-show-only-matching-messages)
 
 ;; For the `with-elfeed-db-visit' macro at compile time.
 (eval-when-compile (require 'elfeed-db nil t))
@@ -90,14 +95,12 @@
 (defvar cw--count 5
   "Max number of results per source.")
 
-(defun cw--async (builder)
-  "Return an async source pipeline around curried async BUILDER.
-Searching starts after 3 characters of input; new input is
-debounced for 0.4s and throttled to one search every 0.7s."
-  (consult--async-pipeline
-   (consult--async-min-input 3)
-   (consult--async-throttle 0.7 0.4)
-   builder))
+(defun cw--async (&rest builders)
+  "Return an async source pipeline around curried async BUILDERS."
+  (apply #'consult--async-pipeline
+         (consult--async-min-input 3)
+         (consult--async-throttle 0.5 0.4)
+         builders))
 
 ;;; Commands
 
@@ -106,24 +109,169 @@ debounced for 0.4s and throttled to one search every 0.7s."
 (defvar cw-source-brave)
 (defvar cw-source-wombag)
 (defvar cw-source-browser-hist)
+(defvar cw-source-notmuch)
 
 (defun cw-search ()
   "Search elfeed, wallabag, browser history, Brave and gptel at once."
   (interactive)
   (consult--multi
    (list cw-source-elfeed cw-source-gptel cw-source-brave
-         cw-source-wombag cw-source-browser-hist)
+         cw-source-wombag cw-source-browser-hist cw-source-notmuch)
    :prompt "Search: " :sort nil :history 'cw--search-history))
 
 (defun cw-search-local ()
   "Search local sources: elfeed, wallabag and browser history."
   (interactive)
   (consult--multi
-   (list cw-source-elfeed cw-source-wombag cw-source-browser-hist)
+   (list cw-source-elfeed cw-source-wombag
+         cw-source-browser-hist cw-source-notmuch)
    :prompt "Search (local sources): " :sort nil
    :history 'cw--search-history))
 
 ;;; Sources
+
+;;;; Notmuch
+
+(defcustom cw-notmuch-search-single t
+  "Whether to search for threads or single messages.
+If true, search at the message level, otherwise return email threads."
+  :type 'boolean
+  :group 'cw)
+
+(defvar cw--notmuch-buffer "*cw-notmuch*"
+  "Buffer name for notmuch previews.")
+
+;; TODO Use a closure and avoid global vars?
+(defvar cw--notmuch-partial-parse nil
+  "Internal variable for parsing status.")
+(defvar cw--notmuch-partial-headers nil
+  "Internal variable for parsing status.")
+(defvar cw--notmuch-info nil
+  "Internal variable for parsing status.")
+
+(defsubst cw--notmuch-set (k v)
+  "Set the value V for property K in the message we're currently parsing."
+  (setq cw--notmuch-partial-parse
+        (plist-put cw--notmuch-partial-parse k v)))
+
+(defsubst cw--notmuch-candidate-id (cand)
+  "Get the CAND ID for the email message."
+  (and cand (get-text-property 0 'id cand)))
+
+(defun cw--notmuch-command-args (input)
+  "Arguments for calling Notmuch on INPUT."
+  (if cw-notmuch-search-single
+      (list "notmuch" "show" "--body=false"
+            (format "--limit=%d" cw--count) "--sort=newest-first" input)
+    (list "notmuch" "search" "--sort=newest-first"
+          (format "--limit=%d" cw--count) input)))
+
+(defun cw--notmuch-transformer (str)
+  "Format Notmuch result STR for Consult."
+  (if cw-notmuch-search-single
+      (cw--notmuch-show-transformer str)
+    (cw--notmuch-search-transformer str)))
+
+(defun cw--notmuch-search-transformer (str)
+  "Transform STR from notmuch search to notmuch display style."
+  (when (string-match "thread:" str)
+    (let* ((id (car (split-string str "\\ +")))
+           (date (substring str 24 37))
+           (mid (substring str 24))
+           (c0 (string-match "[[]" mid))
+           (c1 (string-match "[]]" mid))
+           (count (substring mid c0 (1+ c1)))
+           (auths (string-trim (nth 1 (split-string mid "[];]"))))
+           (subject (string-trim (nth 1 (split-string mid "[;]"))))
+           (headers (list :Subject subject :From auths))
+           (t0 (string-match "([^)]*)\\s-*$" mid))
+           (tags (split-string (substring mid (1+  t0) -1)))
+           (msg (list :id id
+                      :match t
+                      :headers headers
+                      :count count
+                      :date_relative date
+                      :tags tags)))
+      (cw--notmuch-format-candidate msg))))
+
+(defun cw--notmuch-show-transformer (str)
+  "Parse output STR of notmuch show, extracting its components."
+  (if (string-prefix-p "message}" str)
+      (prog1
+          (cw--notmuch-format-candidate
+           (cw--notmuch-set :headers cw--notmuch-partial-headers))
+        (setq cw--notmuch-partial-parse nil
+              cw--notmuch-partial-headers nil
+              cw--notmuch-info nil))
+    (cond ((string-match "message{ \\(id:[^ ]+\\) .+" str)
+           (cw--notmuch-set :id (match-string 1 str))
+           (cw--notmuch-set :match t))
+          ((string-prefix-p "header{" str)
+           (setq cw--notmuch-info t))
+          ((and str cw--notmuch-info)
+           (when (string-match "\\(.+\\) (\\([^)]+\\)) (\\([^)]*\\))$" str)
+             (cw--notmuch-set :Subject (match-string 1 str))
+             (cw--notmuch-set :date_relative (match-string 2 str))
+             (cw--notmuch-set :tags (split-string (match-string 3 str))))
+           (setq cw--notmuch-info nil))
+          ((string-match "\\(Subject\\|From\\|To\\|Cc\\|Date\\): \\(.+\\)?" str)
+           (let ((k (intern (format ":%s" (match-string 1 str))))
+                 (v (or (match-string 2 str) "")))
+             (setq cw--notmuch-partial-headers
+                   (plist-put cw--notmuch-partial-headers k v)))))
+    nil))
+
+(defun cw--notmuch-format-candidate (msg)
+  "Format the result (MSG) of parsing a notmuch show information unit."
+  (when-let* ((id (plist-get msg :id)))
+    (let ((result-string))
+      (dolist (spec notmuch-search-result-format)
+        (when-let* ((field (cw--notmuch-format-field spec msg)))
+          (setq result-string (concat result-string field))))
+      (propertize result-string 'id id 'tags (plist-get msg :tags)))))
+
+(defun cw--notmuch-format-field (spec msg)
+  "Return a string for SPEC given the MSG metadata."
+  (let ((field (car spec)))
+    (cond ((equal field "count")
+           (when-let* ((cnt (plist-get msg :count)))
+             (format (cdr spec) cnt)))
+          ((equal field "tags")
+           (when (plist-get msg :tags)
+             (notmuch-tree-format-field "tags" (cdr spec) msg)))
+          (t (notmuch-tree-format-field field (cdr spec) msg)))))
+
+(defun cw--notmuch-state ()
+  "Preview and action function for Notmuch results."
+  (lambda (action cand)
+    (pcase action
+      ('preview
+       (when-let* ((id (cw--notmuch-candidate-id cand)))
+         (when (get-buffer cw--notmuch-buffer)
+           (kill-buffer cw--notmuch-buffer))
+         (let ((notmuch-show-only-matching-messages nil))
+           (notmuch-show id nil nil nil cw--notmuch-buffer))))
+      ('return
+       (when-let* ((thread-id (cw--notmuch-candidate-id cand)))
+         (when (get-buffer cw--notmuch-buffer)
+           (kill-buffer cw--notmuch-buffer))
+         (notmuch-tree thread-id nil nil nil)))
+      ('exit
+       (when (get-buffer cw--notmuch-buffer)
+         (kill-buffer cw--notmuch-buffer))))))
+
+(defvar cw-source-notmuch
+  `(:name     "Notmuch"
+    :narrow   ?m
+    :category 'consult-web
+    :preview-key "M-RET"
+    :face     font-lock-operator-face
+    :state    ,#'cw--notmuch-state
+    :enabled  ,(lambda () (fboundp 'notmuch-search))
+    :async    ,(cw--async
+                (consult--process-collection #'cw--notmuch-command-args)
+                (consult--async-map #'cw--notmuch-transformer)
+                (consult--async-filter #'identity))))
 
 ;;;; gptel
 
