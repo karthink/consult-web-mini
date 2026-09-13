@@ -110,12 +110,13 @@
 (defvar cw-source-wombag)
 (defvar cw-source-browser-hist)
 (defvar cw-source-notmuch)
+(defvar cw-source-recoll)
 
 (defun cw-search ()
   "Search elfeed, wallabag, browser history, Brave and gptel at once."
   (interactive)
   (consult--multi
-   (list cw-source-elfeed cw-source-gptel cw-source-brave
+   (list cw-source-elfeed cw-source-gptel cw-source-brave cw-source-recoll
          cw-source-wombag cw-source-browser-hist cw-source-notmuch)
    :prompt "Search: " :sort nil :history 'cw--search-history))
 
@@ -123,7 +124,7 @@
   "Search local sources: elfeed, wallabag and browser history."
   (interactive)
   (consult--multi
-   (list cw-source-elfeed cw-source-wombag
+   (list cw-source-elfeed cw-source-wombag cw-source-recoll
          cw-source-browser-hist cw-source-notmuch)
    :prompt "Search (local sources): " :sort nil
    :history 'cw--search-history))
@@ -272,6 +273,124 @@ If true, search at the message level, otherwise return email threads."
                 (consult--process-collection #'cw--notmuch-command-args)
                 (consult--async-map #'cw--notmuch-transformer)
                 (consult--async-filter #'identity))))
+
+;;;; Recoll
+(defvar cw-source-recoll
+  `( :name     "Recoll"
+     :narrow   ?f
+     :category 'consult-web
+     :preview-key any
+     :face     font-lock-constant-face
+     :annotate (lambda (cand) (propertize (get-text-property 0 'url cand)
+                                     'face 'font-lock-comment-face))
+     :state    ,#'cw--recoll-state
+     :enabled  ,(lambda () (executable-find "recollq"))
+     :async    ,(cw--async
+                 (consult--process-collection #'cw--recoll-command)
+                 (consult--async-map #'cw--recoll-transformer)
+                 (consult--async-filter #'identity))))
+
+(defvar cw--recoll-current nil)
+(defvar cw--recoll-index 0)
+(defvar cw--recoll-snippets nil)
+
+(defun cw--recoll-command (text)
+  "Command used to perform queries for TEXT."
+  (setq cw--recoll-current nil)
+  (setq cw--recoll-index 0)
+  (setq cw--recoll-snippets nil)
+  ;; See recollq for flags.  Main ones:
+  ;; -A:  include snippets
+  ;; -p5: include page numbers, 5 snippets per file
+  ;; -a:  and-compose terms
+  ;; -o:  or-compose terms
+  ;; -n100: Print max 100 results
+  `("recollq" "-A" "-p" "5" "-a" ,text))
+
+(defconst cw--recoll-line-regex
+  "^\\(.*?\\)\t\\[\\(.*?\\)\\]\t\\[\\(.*\\)\\]\\(\t\\([0-9]+\\)\\)?"
+  "Regular expression decomposing result lines returned by recollq.")
+
+(defvar cw-recoll-inline-snippets nil
+  "Whether snippets from files should be shown inline.")
+
+(defun cw--recoll-transformer (str)
+  "Decode STR, as returned by recollq."
+  (cond ((string-match-p "^/?SNIPPETS$" str) nil)
+        ((string-match cw--recoll-line-regex str)
+         (let* ((mime (match-string 1 str))
+                (url (match-string 2 str))
+                (title (match-string 3 str))
+                (size (match-string 5 str))
+                (urln (if (string-prefix-p "file://" url)
+                          (abbreviate-file-name (substring url 7)) url))
+                (idx (setq cw--recoll-index (1+ cw--recoll-index)))
+                ;; (cand (consult-recoll--format title url mime))
+                (cand (propertize title
+                                  'mime-type mime
+                                  'url urln
+                                  'title title
+                                  'index idx
+                                  'size size)))
+           (push () cw--recoll-snippets)
+           (setq cw--recoll-current cand)))
+        ((and cw-recoll-inline-snippets cw--recoll-current)
+         (when-let* ((page (and (string-match "^\\([0-9]+\\) :" str)
+                                (match-string 1 str)))
+                     (pageno (and page (string-to-number page)))
+                     (props (text-properties-at 0 cw--recoll-current)))
+           (apply #'propertize (concat "    " (propertize str 'face 'shadow))
+                  'page pageno props)))
+        (cw--recoll-current
+         (push str (car cw--recoll-snippets))
+         nil)))
+
+(defsubst cw--recoll-snippets (candidate)
+  "Combine snippets for CANDIDATE."
+  (let* ((len (length cw--recoll-snippets))
+         (idx (or (get-text-property 0 'index candidate) 0))
+         (pos (- len idx)))
+    (if (>= pos len)
+        ""
+      (mapconcat 'identity (reverse (elt cw--recoll-snippets pos)) "\n"))))
+
+(declare-function embark-open-externally "ext:embark")
+
+(defun cw--recoll-state ()
+  "Recoll result preview function."
+  (lambda (action candidate)
+    "Preview search result CANDIDATE when ACTION is \\='preview."
+    (cond ((or (eq action 'setup) (null candidate))
+           (with-current-buffer (get-buffer-create "*cw-recoll-preview*")
+             (setq-local cursor-in-non-selected-windows nil)
+             (delete-region (point-min) (point-max))))
+          ((and (eq action 'preview) candidate)
+           (when-let* ((url (get-text-property 0 'url candidate))
+                       (buff (get-buffer "*cw-recoll-preview*")))
+             (with-current-buffer buff
+               (delete-region (point-min) (point-max))
+               (when-let* ((title (get-text-property 0 'title candidate)))
+                 (insert (propertize title 'face 'consult-recoll-title-face) "\n"))
+               (insert (propertize url 'face 'consult-recoll-url-face) "\n")
+               (insert (propertize (get-text-property 0 'mime-type candidate)
+                                   'face 'consult-recoll-mime-face))
+               (when-let* ((s (cw--recoll-snippets candidate)))
+                 (insert "\n\n" s))
+               (goto-char (point-min)))
+             (pop-to-buffer buff '((display-buffer-reuse-window
+                                    display-buffer-at-bottom
+                                    display-buffer-in-side-window)
+                                   (side . bottom)
+                                   (window-parameters . ((mode-line-format . none)))
+                                   (window-height . fit-window-to-buffer)))))
+          ((and (eq action 'return) candidate)
+           (if-let* ((url (get-text-property 0 'url candidate))
+                     ((file-exists-p url)))
+               (embark-open-externally url)
+             (message "File %s is not readable!" url)))
+          ((eq action 'exit)
+           (when (get-buffer "*cw-recoll-preview*")
+             (kill-buffer "*cw-recoll-preview*"))))))
 
 ;;;; gptel
 
