@@ -118,7 +118,9 @@
   (consult--multi
    (list cw-source-elfeed cw-source-gptel cw-source-brave cw-source-recoll
          cw-source-wombag cw-source-browser-hist cw-source-notmuch)
-   :prompt "Search: " :sort nil :history 'cw--search-history))
+   :prompt "Search: " :sort nil
+   :category 'consult-web
+   :history 'cw--search-history))
 
 (defun cw-search-local ()
   "Search local sources: elfeed, wallabag and browser history."
@@ -127,6 +129,7 @@
    (list cw-source-elfeed cw-source-wombag cw-source-recoll
          cw-source-browser-hist cw-source-notmuch)
    :prompt "Search (local sources): " :sort nil
+   :category 'consult-web
    :history 'cw--search-history))
 
 ;;; Sources
